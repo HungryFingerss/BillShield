@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BillShield</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f7f7f5; --card: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e3e3de;
+    --accent: #1f6f5c; --accent-text: #ffffff; --bad: #b3261e; --good: #1f6f5c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --card: #1f1f1d; --text: #ececea; --muted: #a3a39d; --line: #34342f;
+      --accent: #5cc2a6; --accent-text: #0f1f1a; --bad: #f2867f; --good: #5cc2a6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 680px; margin: 0 auto; padding: 40px 16px 80px; }
+  h1 { margin: 0; font-size: 28px; }
+  h2 { margin: 0 0 16px; font-size: 18px; }
+  .lead { margin: 4px 0 32px; color: var(--muted); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 24px; margin-bottom: 16px; }
+  label { display: block; margin-bottom: 16px; font-weight: 600; font-size: 14px; }
+  label small { font-weight: 400; color: var(--muted); }
+  input[type=text], input[type=email], textarea {
+    display: block; width: 100%; margin-top: 6px; padding: 10px 12px; font: inherit; font-weight: 400; color: inherit;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  }
+  input[type=file] { display: block; margin-top: 6px; font: inherit; font-size: 14px; font-weight: 400; max-width: 100%; }
+  input[type=checkbox] { accent-color: var(--accent); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+  @media (max-width: 520px) { .row { grid-template-columns: 1fr; } }
+  button {
+    padding: 10px 18px; font: inherit; font-weight: 600; border: 0; border-radius: 8px; cursor: pointer;
+    background: var(--accent); color: var(--accent-text);
+  }
+  button:disabled { opacity: .6; cursor: wait; }
+  button.link { padding: 0; background: none; color: var(--accent); font-weight: 400; text-decoration: underline; }
+  .status { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+  .status.error { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 15px; }
+  td { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  td small { display: block; color: var(--muted); font-size: 13px; }
+  tr.strong td { font-weight: 700; }
+  ul.matches { margin: 0 0 16px; padding-left: 20px; color: var(--good); }
+  .finding { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; font-size: 15px; margin-bottom: 10px; }
+  .finding input { margin-top: 5px; }
+  .tag { display: inline-block; margin-right: 6px; font-size: 12px; font-weight: 700; color: var(--bad); text-transform: uppercase; letter-spacing: .03em; }
+  .hint { font-size: 14px; color: var(--muted); margin: 0 0 16px; }
+  .text { white-space: pre-wrap; margin: 0 0 16px; }
+  .message { white-space: pre-wrap; padding: 16px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>BillShield</h1>
+  <p class="lead">Check a bill against what you were promised.</p>
+
+  <section id="you">
+    <h2>About you</h2>
+    <form id="user-form">
+      <div class="row">
+        <label>Name <input type="text" name="name" required autocomplete="name"></label>
+        <label>Email <input type="email" name="email" required autocomplete="email"></label>
+      </div>
+      <button>Continue</button>
+      <p class="status" id="user-status"></p>
+    </form>
+    <p id="user-done" hidden>Checking bills as <strong id="user-name"></strong>. <button class="link" id="change-user">Not you?</button></p>
+  </section>
+
+  <section id="upload" hidden>
+    <h2>Your bill</h2>
+    <form id="bill-form">
+      <label>Bill <small>PDF or photo</small>
+        <input type="file" name="bill" accept=".pdf,.png,.jpg,.jpeg,.webp" required>
+      </label>
+      <label>Quote or contract <small>optional</small>
+        <input type="file" name="promised" accept=".pdf,.png,.jpg,.jpeg,.webp">
+      </label>
+      <label>Promised amounts <small>optional, one per line</small>
+        <textarea name="promised_text" rows="4" placeholder="Broadband plan: 699&#10;Installation: 0"></textarea>
+      </label>
+      <button>Check bill</button>
+      <p class="status" id="bill-status"></p>
+    </form>
+  </section>
+
+  <section id="results" hidden>
+    <h2>Read from the bill</h2>
+    <table id="bill-table"></table>
+    <ul class="matches" id="matches"></ul>
+    <form id="dispute-form">
+      <h2>What do you want to dispute?</h2>
+      <p class="hint">Untick anything you remember agreeing to. If something marked missing is on the bill, upload a clearer copy. "Worth confirming" items are questions for the seller, not errors; tick them to ask.</p>
+      <div id="findings"></div>
+      <button>Write message to provider</button>
+      <p class="status" id="dispute-status"></p>
+    </form>
+    <p id="all-good" hidden>Everything on the bill matches what you were promised.</p>
+  </section>
+
+  <section id="letter" hidden>
+    <h2>What's wrong</h2>
+    <p class="text" id="explanation"></p>
+    <div id="message-block">
+      <h2>Message to the provider</h2>
+      <div class="message" id="message"></div>
+      <button id="copy">Copy message</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const LABELS = {
+  mismatch: "Different amount", missing_on_bill: "Missing from bill", extra_on_bill: "Not promised",
+  math_error: "Doesn't add up", unverified: "Charge", gst_rate_mismatch: "Wrong GST rate",
+  worth_confirming: "Worth confirming",
+};
+const DISPUTE_BY_DEFAULT = new Set(["mismatch", "missing_on_bill", "extra_on_bill", "math_error", "gst_rate_mismatch"]);
+const $ = (id) => document.getElementById(id);
+let user = null;
+let check = null;
+
+async function api(path, options) {
+  let response;
+  try {
+    response = await fetch("/api" + path, options);
+  } catch {
+    throw new Error("Can't reach the server. Is it running?");
+  }
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(typeof body.detail === "string" ? body.detail : "Something went wrong. Try again.");
+  }
+  return body;
+}
+
+// Disable the form's button and show progress while a request runs; show the error if it fails.
+async function busy(form, statusEl, text, work) {
+  const button = form.querySelector("button");
+  button.disabled = true;
+  statusEl.className = "status";
+  statusEl.textContent = text;
+  try {
+    await work();
+    statusEl.textContent = "";
+  } catch (error) {
+    statusEl.className = "status error";
+    statusEl.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function showUser() {
+  $("user-form").hidden = !!user;
+  $("user-done").hidden = !user;
+  $("upload").hidden = !user;
+  if (user) $("user-name").textContent = `${user.name} (${user.email})`;
+}
+
+function remember(value) {
+  try { value ? localStorage.setItem("billshield-user", JSON.stringify(value)) : localStorage.removeItem("billshield-user"); } catch {}
+}
+
+async function saveUser(name, email) {
+  const { user_id } = await api("/users", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, email }),
+  });
+  user = { id: user_id, name, email };
+  remember(user);
+  showUser();
+}
+
+$("user-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const name = form.elements.namedItem("name").value.trim();
+  const email = form.elements.namedItem("email").value.trim();
+  busy(form, $("user-status"), "Saving…", () => saveUser(name, email));
+});
+
+$("change-user").addEventListener("click", () => {
+  user = null;
+  remember(null);
+  ["results", "letter"].forEach((id) => ($(id).hidden = true));
+  showUser();
+});
+
+function money(amount) {
+  return amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function row(label, amount, strong, detail) {
+  const tr = document.createElement("tr");
+  if (strong) tr.className = "strong";
+  const name = document.createElement("td");
+  name.textContent = label;
+  if (detail) {
+    const small = document.createElement("small");
+    small.textContent = detail;
+    name.append(small);
+  }
+  const value = document.createElement("td");
+  value.textContent = money(amount);
+  tr.append(name, value);
+  return tr;
+}
+
+function showResults(result) {
+  const bill = result.bill;
+  const gstDetail = (i) => (i.hsn ? `HSN ${i.hsn} · ${i.gst_rate}% GST` : "");
+  const rows = [...bill.items, ...bill.discounts].map((i) => row(i.label, i.amount, false, gstDetail(i)));
+  if (bill.subtotal !== null) rows.push(row("Subtotal", bill.subtotal, true));
+  rows.push(...bill.taxes.map((t) => row(t.label, t.amount)));
+  if (bill.total !== null) rows.push(row("Total", bill.total, true));
+  $("bill-table").replaceChildren(...rows);
+
+  $("matches").replaceChildren(...result.findings.filter((f) => f.type === "match").map((f) => {
+    const li = document.createElement("li");
+    li.textContent = f.note;
+    return li;
+  }));
+
+  const choices = [];
+  result.findings.forEach((f, index) => {
+    if (f.type === "match") return;
+    const label = document.createElement("label");
+    label.className = "finding";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = index;
+    box.checked = DISPUTE_BY_DEFAULT.has(f.type);
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = LABELS[f.type];
+    const text = document.createElement("span");
+    text.append(tag, f.note);
+    label.append(box, text);
+    choices.push(label);
+  });
+  $("findings").replaceChildren(...choices);
+  $("dispute-form").hidden = !choices.length;
+  $("all-good").hidden = !!choices.length;
+  $("results").hidden = false;
+  $("letter").hidden = true;
+}
+
+$("bill-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const data = new FormData(form);
+  data.append("user_id", user.id);
+  if (!form.promised.files.length) data.delete("promised");
+  busy(form, $("bill-status"), "Reading your bill… this can take a few seconds.", async () => {
+    check = await api("/checks", { method: "POST", body: data });
+    showResults(check);
+  });
+});
+
+$("dispute-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const disputed = [...$("findings").querySelectorAll("input:checked")].map((box) => Number(box.value));
+  busy(event.target, $("dispute-status"), "Writing your message…", async () => {
+    const reply = await api(`/checks/${check.id}/message`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: user.id, disputed }),
+    });
+    $("explanation").textContent = reply.explanation;
+    $("message").textContent = reply.message;
+    $("message-block").hidden = !reply.message;
+    $("letter").hidden = false;
+    $("letter").scrollIntoView({ behavior: "smooth" });
+  });
+});
+
+$("copy").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("message").textContent);
+  $("copy").textContent = "Copied";
+  setTimeout(() => ($("copy").textContent = "Copy message"), 1500);
+});
+
+try { user = JSON.parse(localStorage.getItem("billshield-user")); } catch {}
+showUser();
+// The remembered id may be stale; saving the same name and email returns the current one.
+if (user) saveUser(user.name, user.email).catch(() => { user = null; remember(null); showUser(); });
+</script>
+</body>
+</html>
