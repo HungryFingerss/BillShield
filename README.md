@@ -52,6 +52,8 @@ backend/
   db.py         Supabase REST and Storage calls
 frontend/
   index.html    the whole UI: one page, no framework
+app.py                entry point Vercel loads (re-exports backend.main:app)
+vercel.json           Vercel region, time limit and bundle exclusions
 tools/
   load_hsn_rates.py   builds the hsn_rates table from the notification PDFs
 data/notifications/   official CBIC GST rate notifications (PDF)
@@ -85,6 +87,19 @@ Requires Python 3.12+, a Supabase project and a Groq API key.
    python -m uvicorn backend.main:app --reload
    ```
 
+## Deploying to Vercel
+
+The repo deploys as-is: Vercel's Python runtime finds the FastAPI `app` in `app.py`, and `vercel.json` sets
+the region to Sydney (`syd1`, next to the Supabase project), a 120-second limit per request, and leaves the loader
+and its PDFs out of the bundle.
+
+1. Import the GitHub repo in Vercel (or run `npx vercel` in this folder).
+2. Add `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `GROQ_API_KEY` and optionally `GROQ_MODEL` as environment variables.
+3. Deploy.
+
+Vercel accepts at most 4.5 MB per request, so uploads are limited to 4 MB in total. The page shrinks photos to at
+most 2000 px JPEG before sending (a 22 MB photo becomes about 200 KB), which is still sharp enough for OCR.
+
 ## API
 
 | Endpoint | Request | Response |
@@ -116,6 +131,7 @@ When CBIC amends rates, add the change to `AMENDMENTS` in `tools/load_hsn_rates.
 
 ## Limits
 
+- Uploads are limited to 4 MB in total (Vercel's request limit); a larger PDF must be trimmed to the bill pages.
 - Bills without an HSN table are read by amounts at the end of each line; unusual layouts may need more rules.
 - A GST table must have its header row (with HSN and GST columns) on each page it appears on.
 - Matching promised to billed lines is by wording: "Internet plan" won't match "Broadband 100 Mbps".

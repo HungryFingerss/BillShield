@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from backend import db, extract, gst, llm
 
 router = APIRouter()
-MAX_BYTES = 20 * 1024 * 1024
+MAX_BYTES = 4 * 1024 * 1024  # Vercel accepts request bodies up to 4.5 MB; the page shrinks photos to fit
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -27,7 +27,7 @@ def read_upload(upload, name):
     if not data:
         raise HTTPException(400, f"The {name} file is empty.")
     if len(data) > MAX_BYTES:
-        raise HTTPException(413, f"The {name} file must be 20 MB or smaller.")
+        raise HTTPException(413, f"The {name} file must be 4 MB or smaller.")
     mime = extract.file_type(data)
     if not mime:
         raise HTTPException(415, f"The {name} file must be a PDF or a JPEG, PNG or WebP image.")

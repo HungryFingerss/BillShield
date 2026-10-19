@@ -122,6 +122,7 @@ const LABELS = {
   math_error: "Doesn't add up", unverified: "Charge", gst_rate_mismatch: "Wrong GST rate",
   worth_confirming: "Worth confirming",
 };
+const MAX_UPLOAD = 4 * 1024 * 1024;  // one request carries both files; Vercel accepts at most 4.5 MB
 const DISPUTE_BY_DEFAULT = new Set(["mismatch", "missing_on_bill", "extra_on_bill", "math_error", "gst_rate_mismatch"]);
 const $ = (id) => document.getElementById(id);
 let user = null;
@@ -252,13 +253,34 @@ function showResults(result) {
   $("letter").hidden = true;
 }
 
+// Photos are resized to at most 2000 px as JPEG: plenty for reading text, and it keeps uploads small.
+async function shrink(file) {
+  if (!file || !file.type.startsWith("image/")) return file;
+  const image = await createImageBitmap(file);
+  const scale = Math.min(1, 2000 / Math.max(image.width, image.height));
+  if (scale === 1 && file.size < 1_500_000) return file;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(image.width * scale);
+  canvas.height = Math.round(image.height * scale);
+  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+  return new File([blob], file.name.replace(/\.\w+$/, "") + ".jpg", { type: "image/jpeg" });
+}
+
 $("bill-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const form = event.target;
-  const data = new FormData(form);
-  data.append("user_id", user.id);
-  if (!form.promised.files.length) data.delete("promised");
   busy(form, $("bill-status"), "Reading your bill… this can take a few seconds.", async () => {
+    const bill = await shrink(form.elements.namedItem("bill").files[0]);
+    const promised = await shrink(form.elements.namedItem("promised").files[0]);
+    if (bill.size + (promised ? promised.size : 0) > MAX_UPLOAD) {
+      throw new Error("Files must be 4 MB or smaller in total. Photos are shrunk automatically; for a large PDF, upload only the bill pages.");
+    }
+    const data = new FormData();
+    data.append("user_id", user.id);
+    data.append("bill", bill);
+    if (promised) data.append("promised", promised);
+    data.append("promised_text", form.elements.namedItem("promised_text").value);
     check = await api("/checks", { method: "POST", body: data });
     showResults(check);
   });

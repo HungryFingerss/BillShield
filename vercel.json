@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["syd1"],
+  "functions": {
+    "app.py": {
+      "maxDuration": 120,
+      "excludeFiles": "{data/**,tools/**,schema.sql,README.md,.env.example}"
+    }
+  }
+}
