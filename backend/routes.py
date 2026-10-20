@@ -36,10 +36,17 @@ def read_upload(upload, name):
 
 def read_bill(lines, attempts=3):
     """Let the LLM read the bill and keep only what code can verify. A reading that adds up to its total is taken
-    at once; otherwise the bill is read again, and the reading closest to adding up wins."""
+    at once; otherwise the bill is read again, and the reading closest to adding up wins. A long document is read
+    once: on Groq's free tier a second reading would wait about a minute for the per-minute limit. If a re-read
+    fails, the best reading so far is kept."""
     best = None
-    for _ in range(attempts):
-        reading = llm.read_document(lines)
+    for _ in range(1 if llm.is_long(lines) else attempts):
+        try:
+            reading = llm.read_document(lines)
+        except HTTPException:
+            if best is None:
+                raise
+            break
         if reading.get("is_bill") is False:
             document = " ".join(str(reading.get("document") or "a document").split())[:80]
             raise HTTPException(422, f"This looks like {document}, not a bill. Upload a bill, invoice or receipt.")

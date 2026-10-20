@@ -146,6 +146,9 @@ When CBIC amends rates, add the change to `AMENDMENTS` in `tools/load_hsn_rates.
 - The LLM's reading can vary between attempts; only amounts printed on the bill are kept, and a reading that still
   doesn't add up is shown for the user to check.
 - Groq's free tier allows 8,000 tokens a minute; calls wait and retry when it is hit, so busy moments are slower.
+- Groq's free tier also refuses any single request over 8,000 tokens. Long documents are trimmed (paragraphs without
+  numbers are left out), read once with low reasoning, and the answer is capped to fit; a document that still doesn't
+  fit gets "Upload only the pages that show the charges".
 - A GST table must have its header row (with HSN and GST columns) on each page it appears on.
 - Matching promised to billed lines is by wording: "Internet plan" won't match "Broadband 100 Mbps".
 - The HSN shortlist needs words shared between the product name and the official description.

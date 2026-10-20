@@ -202,11 +202,14 @@ def printed_numbers(text):
 
 
 def to_number(text):
-    digits = re.sub(r"[^\d.,]", "", str(text)).replace(",", "").strip(".")
+    """An amount as written, keeping a minus sign written before the digits ("$-0.71", "-₹140")."""
+    text = str(text)
+    digits = re.sub(r"[^\d.,]", "", text).replace(",", "").strip(".")
     try:
-        return float(digits)
+        value = float(digits)
     except ValueError:
         return None
+    return -value if re.match(r"^[^\d]*-", text) else value
 
 
 def verify_reading(reading, lines):
@@ -221,7 +224,7 @@ def verify_reading(reading, lines):
             return None
         nearby = " ".join(lines[max(n - 1, 0):n + 2]) if 0 <= n < len(lines) else ""
         amount = to_number(entry.get("amount"))
-        if amount is None or amount not in printed_numbers(nearby):
+        if amount is None or abs(amount) not in printed_numbers(nearby):
             return None
         label = " ".join(str(entry.get("label") or "").split())[:120]
         label_words = re.findall(r"[a-z]{3,}", label.lower())
