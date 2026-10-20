@@ -1,17 +1,19 @@
 # BillShield
 
-Check a bill against what you were promised, and against India's official GST rates. BillShield reads the bill with
-code, shows every difference it finds, lets you decide what to dispute, and drafts the message to the provider.
+Check a bill against what you were promised, and against India's official GST rates. BillShield reads the bill,
+shows every difference it finds, lets you decide what to dispute, and drafts the message to the provider.
 
-The LLM never reads the bill and never produces a number: every amount comes from the bill, and every GST rate from
-the official CBIC notifications.
+Every amount comes from the bill and every GST rate from the official CBIC notifications. Tax invoices with an HSN
+table are read by code alone. Other bills are read by the LLM from the PDF or OCR text, and code keeps only amounts
+that are really printed on the cited line, then checks that they add up; the LLM never sees the file itself.
 
 ## What it checks
 
 | Check | How |
 |---|---|
-| Promised vs billed | Each promised line is matched to a bill line by name; different, missing and unpromised amounts are flagged |
-| The bill's own math | Line items vs subtotal, subtotal + taxes − discounts vs total |
+| Is it a bill? | Bank account statements, gazettes and other non-bills are turned away with a clear message |
+| Promised vs billed | Each promised line is matched to a bill line by name (and amount); different, missing and unpromised charges are flagged. A promised ₹0 that is not charged, and an unpromised discount, are fine |
+| The bill's own math | Items vs subtotal; subtotal + fees + taxes − discounts vs total (₹10 allowed when the bill says it rounds) |
 | GST rate per line | For invoices with an HSN column: the billed rate must be an official rate for that HSN code |
 | GST amount per line | Taxable value × rate must equal the tax charged |
 | HSN classification | Code searches the official rate table for the product; the LLM may pick a better-fitting entry from that shortlist, and the app suggests asking the seller when its official rate differs |
@@ -27,11 +29,18 @@ Browser (frontend/index.html)
    │  POST /api/users · POST /api/checks · POST /api/checks/{id}/message
    ▼
 FastAPI server (backend/)
-   ├─ extract.py  read PDF text or OCR a photo, find amounts and GST table rows, compare   (no AI)
-   ├─ gst.py      official rate lookup, tax math, HSN shortlist                           (no AI)
-   ├─ llm.py      Groq: pick from the shortlist; write the explanation and message
+   ├─ extract.py  PDF text or OCR, GST table rows, verifying the LLM's reading, math, compare   (no AI)
+   ├─ gst.py      official rate lookup, tax math, HSN shortlist                                (no AI)
+   ├─ llm.py      Groq: read a bill's charges; pick from the HSN shortlist; write the message
    └─ db.py       Supabase: users, checks, hsn_rates, bill files
 ```
+
+**Reading a bill without an HSN table:** the LLM gets the text as numbered lines (`|` marks column gaps) and lists
+items, fees, discounts, taxes, subtotal and total, each with its line number and the amount as printed. Code drops
+any amount that is not printed on that line (allowing for two known OCR misreads: ₹ read as a leading 7, 2 or 1,
+and a thousands comma read as a dot) and any label whose words are not there. If the result doesn't add up to the
+total, the bill is read again (up to 3 times) and the reading closest to adding up is kept; a mismatch that remains
+is shown as "Check the reading", not as an error in the bill.
 
 1. **Identify:** name and email, no password. The email is the user's identity.
 2. **Check:** upload a bill (PDF or photo), optionally with a quote or typed promised amounts. The server reads it,
@@ -132,7 +141,11 @@ When CBIC amends rates, add the change to `AMENDMENTS` in `tools/load_hsn_rates.
 ## Limits
 
 - Uploads are limited to 4 MB in total (Vercel's request limit); a larger PDF must be trimmed to the bill pages.
-- Bills without an HSN table are read by amounts at the end of each line; unusual layouts may need more rules.
+- Low-resolution images (under 1000 px) can lose the ₹ sign or commas in OCR; the page warns and asks for the PDF
+  or a sharper photo.
+- The LLM's reading can vary between attempts; only amounts printed on the bill are kept, and a reading that still
+  doesn't add up is shown for the user to check.
+- Groq's free tier allows 8,000 tokens a minute; calls wait and retry when it is hit, so busy moments are slower.
 - A GST table must have its header row (with HSN and GST columns) on each page it appears on.
 - Matching promised to billed lines is by wording: "Internet plan" won't match "Broadband 100 Mbps".
 - The HSN shortlist needs words shared between the product name and the official description.

@@ -4,5 +4,6 @@ python-multipart
 requests
 python-dotenv
 pymupdf
+pillow
 rapidocr
 onnxruntime

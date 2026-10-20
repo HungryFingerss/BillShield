@@ -1,9 +1,11 @@
 """Deterministic bill reading: file type -> text lines -> amounts -> findings. No LLM here."""
+import io
 import re
 from difflib import SequenceMatcher
 from functools import cache
 
 import pymupdf
+from PIL import Image
 
 SIGNATURES = {b"%PDF": "application/pdf", b"\x89PNG": "image/png", b"\xff\xd8\xff": "image/jpeg"}
 MAX_PAGES = 10
@@ -19,6 +21,16 @@ TAX = re.compile(r"\b(gst|cgst|sgst|igst|vat|tax|cess)\b", re.I)
 TOTAL = re.compile(r"total|amount due|payable|balance due", re.I)
 DISCOUNT = re.compile(r"discount|rebate|waiver|cashback", re.I)
 FILLER = {"charge", "charges", "fee", "fees", "rs", "inr", "the", "of", "for", "and", "per", "month", "monthly"}
+
+
+LOW_RESOLUTION = 1000  # pixels on the longer side; below this OCR starts misreading small print like the ₹ sign
+
+
+def is_low_resolution(data, mime):
+    if mime == "application/pdf":
+        return False
+    with Image.open(io.BytesIO(data)) as image:
+        return max(image.size) < LOW_RESOLUTION
 
 
 def file_type(data):
@@ -53,15 +65,24 @@ def read_pages(data, mime):
 
 
 def group_lines(fragments):
-    """Join fragments that sit on the same row into lines, left to right."""
+    """Join fragments that sit on the same row into lines, left to right. A gap wider than about two characters'
+    height marks a new column and is written as " | ", so tables keep their shape in plain text."""
     rows = []
-    for left, _, top, bottom, text in sorted(fragments, key=lambda f: (f[2] + f[3]) / 2):
+    for fragment in sorted(fragments, key=lambda f: (f[2] + f[3]) / 2):
+        top, bottom = fragment[2], fragment[3]
         middle = (top + bottom) / 2
         if rows and abs(middle - rows[-1]["middle"]) <= (bottom - top) / 2:
-            rows[-1]["parts"].append((left, text))
+            rows[-1]["parts"].append(fragment)
         else:
-            rows.append({"middle": middle, "parts": [(left, text)]})
-    return [" ".join(text for _, text in sorted(row["parts"])) for row in rows]
+            rows.append({"middle": middle, "parts": [fragment]})
+    lines = []
+    for row in rows:
+        parts = sorted(row["parts"])
+        line = parts[0][4]
+        for before, part in zip(parts, parts[1:]):
+            line += (" | " if part[0] - before[1] > 2 * (part[3] - part[2]) else " ") + part[4]
+        lines.append(line)
+    return lines
 
 
 def read_lines(pages):
@@ -159,12 +180,97 @@ def gst_rows(pages):
 def table_fields(rows):
     """Bill fields for a tax invoice read row by row: every line already includes its GST."""
     items = [r for r in rows if r["amount"] is not None]
-    return {"items": items, "subtotal": None, "taxes": [], "discounts": [],
+    return {"items": items, "fees": [], "subtotal": None, "taxes": [], "discounts": [],
             "total": round(sum(i["amount"] for i in items), 2)}
 
 
+NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def printed_numbers(text):
+    """Every value a number printed in the text can stand for, allowing for two known OCR misreads: the rupee
+    sign read as a leading 7, 2 or 1 (₹8.10 -> 78.10) and a thousands comma read as a dot (11,800 -> 11.800)."""
+    values = set()
+    for token in NUMBER.findall(text):
+        for candidate in (token, token[1:] if token[0] in "127" and len(token) > 2 else None):
+            if not candidate or not candidate[0].isdigit():
+                continue
+            values.add(float(candidate.replace(",", "")))
+            if re.fullmatch(r"\d{1,3}(\.\d{3})+", candidate):
+                values.add(float(candidate.replace(".", "")))
+    return values
+
+
+def to_number(text):
+    digits = re.sub(r"[^\d.,]", "", str(text)).replace(",", "").strip(".")
+    try:
+        return float(digits)
+    except ValueError:
+        return None
+
+
+def verify_reading(reading, lines):
+    """Keep only what the LLM read that is really printed: each amount must appear on the line it cites (or a
+    neighbouring line), and each label's words must be there too. Everything else is dropped and recorded."""
+    def check(entry, needs_label):
+        if not isinstance(entry, dict):
+            return None
+        try:
+            n = int(entry.get("line")) - 1
+        except (TypeError, ValueError):
+            return None
+        nearby = " ".join(lines[max(n - 1, 0):n + 2]) if 0 <= n < len(lines) else ""
+        amount = to_number(entry.get("amount"))
+        if amount is None or amount not in printed_numbers(nearby):
+            return None
+        label = " ".join(str(entry.get("label") or "").split())[:120]
+        label_words = re.findall(r"[a-z]{3,}", label.lower())
+        if needs_label and (not label or label_words and not any(w in nearby.lower() for w in label_words)):
+            return None
+        return {"label": label, "amount": amount}
+
+    fields = {"items": [], "fees": [], "discounts": [], "taxes": [], "subtotal": None, "total": None, "dropped": [],
+              "read_by": "llm", "rounds_total": any("round" in line.lower() for line in lines)}  # "Round off", "Round sum payable"
+    seen = set()
+    for kind in ("items", "fees", "discounts", "taxes"):
+        for entry in reading.get(kind) or []:
+            kept = check(entry, needs_label=True)
+            if kept is None:
+                fields["dropped"].append({"kind": kind, "entry": str(entry)[:200]})
+                continue
+            key = (entry.get("line"), kept["amount"])
+            if key in seen:  # the same printed amount listed twice
+                continue
+            seen.add(key)
+            if kind == "discounts":
+                kept["amount"] = -abs(kept["amount"])
+            fields[kind].append(kept)
+    for kind in ("subtotal", "total"):
+        entry = reading.get(kind)
+        if entry:
+            kept = check(entry, needs_label=False)
+            if kept is None:
+                fields["dropped"].append({"kind": kind, "entry": str(entry)[:200]})
+            else:
+                fields[kind] = kept["amount"]
+    return fields
+
+
+def merge_fields(*all_fields):
+    """One set of fields from several readings (typed promises plus a promised file)."""
+    merged = {"items": [], "fees": [], "discounts": [], "taxes": [], "subtotal": None, "total": None}
+    for fields in all_fields:
+        for kind in ("items", "fees", "discounts", "taxes"):
+            merged[kind] += fields.get(kind, [])
+        for kind in ("subtotal", "total"):
+            if merged[kind] is None:
+                merged[kind] = fields.get(kind)
+    return merged
+
+
 def parse(lines):
-    fields = {"items": [], "subtotal": None, "taxes": [], "discounts": [], "total": None}
+    """Typed promised amounts, one per line, like "Installation: 0"."""
+    fields = {"items": [], "fees": [], "subtotal": None, "taxes": [], "discounts": [], "total": None}
     for line in lines:
         match = AMOUNT.search(line)
         if not match:
@@ -187,28 +293,39 @@ def parse(lines):
 
 
 def is_empty(fields):
-    return not fields["items"] and not fields["discounts"] and fields["total"] is None
+    return not any(fields.get(kind) for kind in ("items", "fees", "discounts")) and fields["total"] is None
 
 
 def math_findings(fields):
+    """Does the bill add up? For a bill read by the LLM a mismatch may be a reading error rather than the bill's,
+    so it is reported as check_reading (a question for the user) instead of math_error (a dispute)."""
+    kind = "check_reading" if fields.get("read_by") == "llm" else "math_error"
+    advice = " The reading may be off: compare with your bill before disputing." if kind == "check_reading" else ""
     findings = []
     items_sum = round(sum(i["amount"] for i in fields["items"]), 2)
     subtotal = fields["subtotal"]
     if subtotal is not None and fields["items"] and abs(items_sum - subtotal) > 0.01:
         findings.append({
-            "type": "math_error", "label": "Subtotal", "billed": subtotal,
-            "note": f"Line items add up to {items_sum:.2f}, but the subtotal says {subtotal:.2f}",
+            "type": kind, "label": "Subtotal", "billed": subtotal,
+            "note": f"Line items add up to {items_sum:.2f}, but the subtotal says {subtotal:.2f}.{advice}",
         })
     total = fields["total"]
     if total is not None and (fields["items"] or subtotal is not None):
         base = subtotal if subtotal is not None else items_sum
-        expected = round(base + sum(t["amount"] for t in fields["taxes"]) + sum(d["amount"] for d in fields["discounts"]), 2)
-        if abs(expected - total) > 0.5:  # bills often round off the total
+        added = sum(x["amount"] for group in ("fees", "taxes", "discounts") for x in fields.get(group, []))
+        expected = round(base + added, 2)
+        tolerance = 10 if fields.get("rounds_total") else 0.5  # rupee round-off, or a bill that says it rounds
+        if abs(expected - total) > tolerance:
             findings.append({
-                "type": "math_error", "label": "Total", "billed": total,
-                "note": f"Items, taxes and discounts add up to {expected:.2f}, but the total says {total:.2f}",
+                "type": kind, "label": "Total", "billed": total,
+                "note": f"Items, fees, taxes and discounts add up to {expected:.2f}, but the total says {total:.2f}.{advice}",
             })
     return findings
+
+
+def reading_problems(fields):
+    """How far a reading is from adding up: one point per arithmetic mismatch, one for a missing total."""
+    return len(math_findings(fields)) + (fields["total"] is None)
 
 
 def words(text):
@@ -234,21 +351,32 @@ def finding(kind, label, billed=None, promised=None):
 
 def compare(bill, promised):
     findings = math_findings(bill)
-    bill_lines = bill["items"] + bill["discounts"]
+    bill_lines = bill["items"] + bill.get("fees", []) + bill["discounts"]
     if promised is None:
         return findings + [finding("unverified", b["label"], billed=b["amount"]) for b in bill_lines]
 
-    promised_lines = promised["items"] + promised["discounts"]
+    promised_lines = promised["items"] + promised.get("fees", []) + promised["discounts"]
+    def score(p, b):
+        """Name similarity, plus a bonus when the amounts agree. Lines pair up when their names are similar (0.5),
+        or fairly similar (0.3) with the same amount, like "Discount: 140" and "Discount Applied -140"."""
+        name = similarity(p["label"], b["label"])
+        same_amount = abs(abs(b["amount"]) - abs(p["amount"])) <= 0.01
+        return name + (0.3 if same_amount else 0), name >= 0.5 or (same_amount and name >= 0.3)
+
     pairs = sorted(
-        ((similarity(p["label"], b["label"]), pi, bi) for pi, p in enumerate(promised_lines) for bi, b in enumerate(bill_lines)),
+        ((*score(p, b), pi, bi) for pi, p in enumerate(promised_lines) for bi, b in enumerate(bill_lines)),
         reverse=True,
     )
     matched = {}
-    for score, pi, bi in pairs:
-        if score >= 0.5 and pi not in matched and bi not in matched.values():
+    for _, close_enough, pi, bi in pairs:
+        if close_enough and pi not in matched and bi not in matched.values():
             matched[pi] = bi
 
     for pi, p in enumerate(promised_lines):
+        if pi not in matched and p["amount"] == 0:  # promised free and not charged: as promised
+            findings.append({"type": "match", "label": p["label"], "billed": None, "promised": 0.0,
+                             "note": f"{p['label']}: not charged, as promised"})
+            continue
         if pi not in matched:
             findings.append(finding("missing_on_bill", p["label"], promised=p["amount"]))
             continue
@@ -256,7 +384,7 @@ def compare(bill, promised):
         kind = "match" if abs(b["amount"] - p["amount"]) <= 0.01 else "mismatch"
         findings.append(finding(kind, b["label"], billed=b["amount"], promised=p["amount"]))
     for bi, b in enumerate(bill_lines):
-        if bi not in matched.values():
+        if bi not in matched.values() and b["amount"] > 0:  # an unpromised discount is the customer's gain
             findings.append(finding("extra_on_bill", b["label"], billed=b["amount"]))
 
     if bill["total"] is not None and promised["total"] is not None:

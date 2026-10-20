@@ -94,6 +94,7 @@
   <section id="results" hidden>
     <h2>Read from the bill</h2>
     <table id="bill-table"></table>
+    <p class="hint" id="read-note"></p>
     <ul class="matches" id="matches"></ul>
     <form id="dispute-form">
       <h2>What do you want to dispute?</h2>
@@ -120,7 +121,7 @@
 const LABELS = {
   mismatch: "Different amount", missing_on_bill: "Missing from bill", extra_on_bill: "Not promised",
   math_error: "Doesn't add up", unverified: "Charge", gst_rate_mismatch: "Wrong GST rate",
-  worth_confirming: "Worth confirming",
+  worth_confirming: "Worth confirming", check_reading: "Check the reading",
 };
 const MAX_UPLOAD = 4 * 1024 * 1024;  // one request carries both files; Vercel accepts at most 4.5 MB
 const DISPUTE_BY_DEFAULT = new Set(["mismatch", "missing_on_bill", "extra_on_bill", "math_error", "gst_rate_mismatch"]);
@@ -217,11 +218,16 @@ function row(label, amount, strong, detail) {
 function showResults(result) {
   const bill = result.bill;
   const gstDetail = (i) => (i.hsn ? `HSN ${i.hsn} · ${i.gst_rate}% GST` : "");
-  const rows = [...bill.items, ...bill.discounts].map((i) => row(i.label, i.amount, false, gstDetail(i)));
+  const rows = bill.items.map((i) => row(i.label, i.amount, false, gstDetail(i)));
   if (bill.subtotal !== null) rows.push(row("Subtotal", bill.subtotal, true));
-  rows.push(...bill.taxes.map((t) => row(t.label, t.amount)));
+  rows.push(...[...(bill.fees || []), ...bill.discounts, ...bill.taxes].map((x) => row(x.label, x.amount)));
   if (bill.total !== null) rows.push(row("Total", bill.total, true));
   $("bill-table").replaceChildren(...rows);
+  const dropped = (bill.dropped || []).length;
+  $("read-note").textContent = [
+    bill.low_resolution ? "This image is low resolution, so some amounts may be misread (the ₹ sign often turns into a 7). For a reliable check, upload the original PDF or a sharper photo." : "",
+    dropped ? `${dropped} amount${dropped > 1 ? "s" : ""} the reader suggested could not be found on the bill and ${dropped > 1 ? "were" : "was"} left out.` : "",
+  ].join(" ").trim();
 
   $("matches").replaceChildren(...result.findings.filter((f) => f.type === "match").map((f) => {
     const li = document.createElement("li");

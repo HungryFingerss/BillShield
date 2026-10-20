@@ -34,6 +34,24 @@ def read_upload(upload, name):
     return data, mime
 
 
+def read_bill(lines, attempts=3):
+    """Let the LLM read the bill and keep only what code can verify. A reading that adds up to its total is taken
+    at once; otherwise the bill is read again, and the reading closest to adding up wins."""
+    best = None
+    for _ in range(attempts):
+        reading = llm.read_document(lines)
+        if reading.get("is_bill") is False:
+            document = " ".join(str(reading.get("document") or "a document").split())[:80]
+            raise HTTPException(422, f"This looks like {document}, not a bill. Upload a bill, invoice or receipt.")
+        fields = extract.verify_reading(reading, lines)
+        problems = extract.reading_problems(fields)
+        if best is None or problems < best[0]:
+            best = (problems, fields)
+        if problems == 0:
+            break
+    return best[1]
+
+
 @router.post("/users")
 def save_user(user: User):
     name, email = user.name.strip(), user.email.strip().lower()
@@ -55,16 +73,18 @@ def create_check(
     pages = extract.read_pages(*files["bill"])
     bill_lines = extract.read_lines(pages)
     gst_rows = extract.gst_rows(pages)
-    bill_fields = extract.table_fields(gst_rows) if gst_rows else extract.parse(bill_lines)
+    bill_fields = extract.table_fields(gst_rows) if gst_rows else read_bill(bill_lines)
     if extract.is_empty(bill_fields):
         raise HTTPException(422, "Couldn't read any amounts from the bill. Upload a clearer photo or the original PDF.")
     bill_fields["header"] = bill_lines[:3]
+    bill_fields["low_resolution"] = extract.is_low_resolution(*files["bill"])
 
-    promised_lines = promised_text.splitlines()
+    promised_parts = [extract.parse(promised_text.splitlines())] if promised_text.strip() else []
     if promised and promised.filename:
         files["promised"] = read_upload(promised, "promised values")
-        promised_lines += extract.read_lines(extract.read_pages(*files["promised"]))
-    promised_fields = extract.parse(promised_lines) if promised_lines else None
+        promised_file_lines = extract.read_lines(extract.read_pages(*files["promised"]))
+        promised_parts.append(extract.verify_reading(llm.read_document(promised_file_lines), promised_file_lines))
+    promised_fields = extract.merge_fields(*promised_parts) if promised_parts else None
     if promised_fields and extract.is_empty(promised_fields):
         raise HTTPException(422, "Couldn't read any amounts from the promised values. Write one per line, like 'Installation: 0'.")
 
